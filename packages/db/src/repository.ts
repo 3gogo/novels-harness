@@ -121,6 +121,16 @@ export class NovelHarnessRepository {
     return rows.map((row) => projectSchema.parse(row));
   }
 
+  async listRecentProjects(limit = 10) {
+    const rows = await this.db
+      .select()
+      .from(projectsTable)
+      .orderBy(desc(projectsTable.updatedAt))
+      .limit(limit);
+
+    return rows.map((row) => projectSchema.parse(row));
+  }
+
   async saveNodeRun(nodeRun: NodeRun) {
     const input = nodeRunSchema.parse(nodeRun);
 

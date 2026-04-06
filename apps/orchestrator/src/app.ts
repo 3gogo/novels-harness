@@ -18,6 +18,9 @@ export function buildApp() {
     logger: true,
   });
 
+  const workspaceRoot = path.join(process.cwd(), "workspace");
+  const databasePath = path.join(process.cwd(), "data", "novel-harness.db");
+
   app.get("/health", async () => ({
     ok: true,
     service: "orchestrator",
@@ -50,6 +53,53 @@ export function buildApp() {
     };
   });
 
+  app.get("/api/demo/state", async (request, reply) => {
+    const databaseHandle = await createDatabaseHandle(databasePath);
+
+    try {
+      const repository = new NovelHarnessRepository(databaseHandle.db);
+      const [latestProject] = await repository.listRecentProjects(1);
+
+      if (!latestProject) {
+        return {
+          ok: true,
+          workspaceRoot,
+          databasePath,
+          latestRun: null,
+        };
+      }
+
+      const [batch, nodeRuns, artifacts, gates] = await Promise.all([
+        repository.getBatch(latestProject.batchId),
+        repository.listNodeRunsForProject(latestProject.projectId),
+        repository.listArtifactsForProject(latestProject.projectId),
+        repository.listGateTasksForProject(latestProject.projectId),
+      ]);
+
+      return {
+        ok: true,
+        workspaceRoot,
+        databasePath,
+        latestRun: {
+          batch,
+          project: latestProject,
+          nodeRuns,
+          artifacts,
+          gates,
+        },
+      };
+    } catch (error) {
+      request.log.error(error);
+      reply.code(500);
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      await databaseHandle.close();
+    }
+  });
+
   app.post("/api/demo/incubation", async (request, reply) => {
     const body = (request.body as Partial<{
       batchName: string;
@@ -61,8 +111,6 @@ export function buildApp() {
       autoApproveFinalGate: boolean;
     }>) ?? {};
 
-    const workspaceRoot = path.join(process.cwd(), "workspace");
-    const databasePath = path.join(process.cwd(), "data", "novel-harness.db");
     const databaseHandle = await createDatabaseHandle(databasePath);
 
     try {
