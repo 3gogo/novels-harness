@@ -1,0 +1,17 @@
+{
+  "name": "@novel-harness/orchestrator",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@novel-harness/evaluation": "workspace:*",
+    "@novel-harness/prompts": "workspace:*",
+    "@novel-harness/schemas": "workspace:*",
+    "@novel-harness/workflows": "workspace:*",
+    "fastify": "^5.2.1"
+  }
+}

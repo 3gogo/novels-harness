@@ -1,0 +1,86 @@
+:root {
+  color-scheme: light;
+  font-family: "Segoe UI", sans-serif;
+  background: linear-gradient(180deg, #f4efe7 0%, #e4ddcf 100%);
+  color: #1d1a16;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+.shell {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 48px 24px 72px;
+}
+
+.hero {
+  margin-bottom: 32px;
+}
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.8rem;
+  color: #6e5e44;
+  margin: 0 0 12px;
+}
+
+h1,
+h2,
+h3,
+p,
+ul {
+  margin-top: 0;
+}
+
+h1 {
+  font-size: clamp(2.8rem, 6vw, 4.4rem);
+  line-height: 0.95;
+  margin-bottom: 16px;
+}
+
+.lede {
+  max-width: 760px;
+  font-size: 1.05rem;
+  line-height: 1.7;
+  color: #4b4337;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 18px;
+  margin-bottom: 18px;
+}
+
+.card,
+.panel {
+  background: rgba(255, 251, 246, 0.88);
+  border: 1px solid rgba(109, 91, 63, 0.14);
+  border-radius: 18px;
+  box-shadow: 0 14px 36px rgba(56, 42, 18, 0.08);
+  padding: 22px;
+}
+
+.stacked-list {
+  padding-left: 18px;
+  line-height: 1.8;
+}
+
+.panel-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 18px;
+}
+
+.panel p {
+  color: #54493c;
+  line-height: 1.7;
+}

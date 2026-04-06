@@ -1,0 +1,8 @@
+.claude
+.superpowers/
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+*.sqlite
+*.sqlite-journal
