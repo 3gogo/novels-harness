@@ -54,6 +54,14 @@ interface GateTask {
   decision: GateDecision | null;
 }
 
+interface ExecutorInfo {
+  mode: "openai" | "fake";
+  adapterId: string;
+  displayName: string;
+  modelId?: string;
+  reason: string;
+}
+
 interface DemoRun {
   batch: Batch | null;
   project: Project;
@@ -66,6 +74,7 @@ interface DemoStateResponse {
   ok: boolean;
   workspaceRoot: string;
   databasePath: string;
+  executor: ExecutorInfo;
   latestRun: DemoRun | null;
 }
 
@@ -73,6 +82,7 @@ interface DemoRunResponse {
   ok: boolean;
   workspaceRoot: string;
   databasePath: string;
+  executor: ExecutorInfo;
   result: DemoRun;
 }
 
@@ -106,6 +116,7 @@ export function App() {
   const [latestRun, setLatestRun] = useState<DemoRun | null>(null);
   const [workspaceRoot, setWorkspaceRoot] = useState("");
   const [databasePath, setDatabasePath] = useState("");
+  const [executorInfo, setExecutorInfo] = useState<ExecutorInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -130,6 +141,7 @@ export function App() {
 
       setWorkspaceRoot(payload.workspaceRoot);
       setDatabasePath(payload.databasePath);
+      setExecutorInfo(payload.executor);
       setLatestRun(payload.latestRun);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : String(loadError));
@@ -167,6 +179,7 @@ export function App() {
 
       setWorkspaceRoot(payload.workspaceRoot);
       setDatabasePath(payload.databasePath);
+      setExecutorInfo(payload.executor);
       setLatestRun(payload.result);
     } catch (runError) {
       setError(runError instanceof Error ? runError.message : String(runError));
@@ -332,10 +345,24 @@ export function App() {
               <strong>{project?.latestScore ?? "--"}</strong>
             </div>
             <div className="snapshot-tile">
+              <span>执行模式</span>
+              <strong>{executorInfo?.mode ?? "--"}</strong>
+            </div>
+            <div className="snapshot-tile">
               <span>节点数</span>
               <strong>{latestRun?.nodeRuns.length ?? 0}</strong>
             </div>
           </div>
+
+          {executorInfo ? (
+            <div className="executor-note">
+              <p className="timeline-title">
+                {executorInfo.displayName}
+                {executorInfo.modelId ? ` / ${executorInfo.modelId}` : ""}
+              </p>
+              <p className="timeline-meta">{executorInfo.reason}</p>
+            </div>
+          ) : null}
         </article>
       </section>
 

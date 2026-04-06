@@ -11,6 +11,7 @@
     "@novel-harness/assets": "workspace:*",
     "@novel-harness/db": "workspace:*",
     "@novel-harness/evaluation": "workspace:*",
+    "@novel-harness/executors": "workspace:*",
     "@novel-harness/prompts": "workspace:*",
     "@novel-harness/schemas": "workspace:*",
     "@novel-harness/testkit": "workspace:*",

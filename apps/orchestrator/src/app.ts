@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import { createDatabaseHandle, NovelHarnessRepository } from "@novel-harness/db";
+import { createOpenAIExecutorFromEnv, type ResolvedExecutor } from "@novel-harness/executors";
 import Fastify from "fastify";
 
 import { suggestGateDecision } from "@novel-harness/evaluation";
@@ -20,12 +21,15 @@ export function buildApp() {
 
   const workspaceRoot = path.join(process.cwd(), "workspace");
   const databasePath = path.join(process.cwd(), "data", "novel-harness.db");
+  const executorResolution = resolveExecutor();
+  const publicExecutorInfo = toExecutorInfo(executorResolution);
 
   app.get("/health", async () => ({
     ok: true,
     service: "orchestrator",
     workflowNodes: incubationNodeOrder.length,
     promptTemplates: Object.keys(defaultPromptTemplates).length,
+    executor: publicExecutorInfo,
   }));
 
   app.get("/api/workflows/incubation", async () => ({
@@ -65,6 +69,7 @@ export function buildApp() {
           ok: true,
           workspaceRoot,
           databasePath,
+          executor: publicExecutorInfo,
           latestRun: null,
         };
       }
@@ -80,6 +85,7 @@ export function buildApp() {
         ok: true,
         workspaceRoot,
         databasePath,
+        executor: publicExecutorInfo,
         latestRun: {
           batch,
           project: latestProject,
@@ -117,7 +123,7 @@ export function buildApp() {
       const repository = new NovelHarnessRepository(databaseHandle.db);
       const runner = new IncubationWorkflowRunner(
         repository,
-        new FakeExecutor(),
+        executorResolution.executor,
       );
       const result = await runner.runProject({
         rootDir: workspaceRoot,
@@ -138,6 +144,7 @@ export function buildApp() {
         ok: true,
         workspaceRoot,
         databasePath,
+        executor: publicExecutorInfo,
         result,
       };
     } catch (error) {
@@ -153,4 +160,33 @@ export function buildApp() {
   });
 
   return app;
+}
+
+function resolveExecutor(): ResolvedExecutor {
+  const openaiExecutor = createOpenAIExecutorFromEnv();
+
+  if (openaiExecutor) {
+    return openaiExecutor;
+  }
+
+  const fakeExecutor = new FakeExecutor();
+  return {
+    executor: fakeExecutor,
+    mode: "fake",
+    adapterId: fakeExecutor.id,
+    displayName: fakeExecutor.displayName,
+    reason: "OPENAI_API_KEY not set; falling back to FakeExecutor.",
+  };
+}
+
+function toExecutorInfo(executorResolution: ResolvedExecutor) {
+  return {
+    mode: executorResolution.mode,
+    adapterId: executorResolution.adapterId,
+    displayName: executorResolution.displayName,
+    ...(executorResolution.modelId
+      ? { modelId: executorResolution.modelId }
+      : {}),
+    reason: executorResolution.reason,
+  };
 }

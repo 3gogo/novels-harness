@@ -256,6 +256,13 @@ textarea {
   font-size: 1.2rem;
 }
 
+.executor-note {
+  margin-top: 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.74);
+  padding: 14px;
+}
+
 .stack {
   display: grid;
   gap: 12px;

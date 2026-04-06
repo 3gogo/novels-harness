@@ -12,9 +12,15 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@novel-harness/schemas": "workspace:*"
+    "@novel-harness/schemas": "workspace:*",
+    "@novel-harness/prompts": "workspace:*",
+    "openai": "^6.33.0"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4"
   }
 }
