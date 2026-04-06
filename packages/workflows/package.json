@@ -12,9 +12,17 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@novel-harness/assets": "workspace:*",
+    "@novel-harness/db": "workspace:*",
+    "@novel-harness/evaluation": "workspace:*",
+    "@novel-harness/executors": "workspace:*",
     "@novel-harness/schemas": "workspace:*"
+  },
+  "devDependencies": {
+    "@novel-harness/testkit": "workspace:*"
   }
 }

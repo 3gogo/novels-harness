@@ -161,6 +161,72 @@ export const gateTaskSchema = z.object({
   updatedAt: isoTimeSchema,
 });
 
+export const batchBriefArtifactSchema = z.object({
+  batchId: idSchema,
+  batchName: z.string().min(1),
+  targetLane: z.string().min(1),
+  audience: z.string().min(1),
+  constraints: z.array(z.string().min(1)).default([]),
+  goal: z.string().min(1),
+});
+
+export const ideaCandidateSchema = z.object({
+  title: z.string().min(1),
+  hook: z.string().min(1),
+  premise: z.string().min(1),
+  differentiator: z.string().min(1),
+});
+
+export const ideaSpreadArtifactSchema = z.object({
+  candidates: z.array(ideaCandidateSchema).min(1),
+});
+
+export const conceptPackArtifactSchema = z.object({
+  title: z.string().min(1),
+  tagline: z.string().min(1),
+  premise: z.string().min(1),
+  synopsis: z.string().min(1),
+  protagonist: z.string().min(1),
+  stakes: z.string().min(1),
+  worldRules: z.array(z.string().min(1)).min(1),
+  openingPromise: z.array(z.string().min(1)).min(1),
+});
+
+export const openingChapterSchema = z.object({
+  chapterNumber: z.number().int().positive(),
+  title: z.string().min(1),
+  body: z.string().min(1),
+});
+
+export const openingDraftArtifactSchema = z.object({
+  chapters: z.array(openingChapterSchema).min(1),
+});
+
+export const promotionDecisionArtifactSchema = z.object({
+  decision: gateDecisionSchema,
+  weightedScore: z.number().min(0).max(100),
+  rationale: z.string().min(1),
+  riskFlags: z.array(z.string().min(1)).default([]),
+});
+
+export const traceLogSchema = z.object({
+  adapterId: z.string().min(1),
+  modelId: z.string().min(1),
+  startedAt: isoTimeSchema,
+  completedAt: isoTimeSchema,
+  rawOutputRef: z.string().min(1).optional(),
+  usage: z
+    .object({
+      inputTokens: z.number().int().nonnegative().optional(),
+      outputTokens: z.number().int().nonnegative().optional(),
+    })
+    .optional(),
+  metrics: z.record(z.string(), z.number()),
+  status: z.enum(["succeeded", "failed"]),
+  failureType: failureTypeSchema.optional(),
+  errorMessage: z.string().optional(),
+});
+
 export type Batch = z.infer<typeof batchSchema>;
 export type BatchStatus = z.infer<typeof batchStatusSchema>;
 export type Project = z.infer<typeof projectSchema>;
@@ -176,3 +242,13 @@ export type NodeRun = z.infer<typeof nodeRunSchema>;
 export type ArtifactManifest = z.infer<typeof artifactManifestSchema>;
 export type ReviewScorecard = z.infer<typeof reviewScorecardSchema>;
 export type GateTask = z.infer<typeof gateTaskSchema>;
+export type BatchBriefArtifact = z.infer<typeof batchBriefArtifactSchema>;
+export type IdeaCandidate = z.infer<typeof ideaCandidateSchema>;
+export type IdeaSpreadArtifact = z.infer<typeof ideaSpreadArtifactSchema>;
+export type ConceptPackArtifact = z.infer<typeof conceptPackArtifactSchema>;
+export type OpeningChapter = z.infer<typeof openingChapterSchema>;
+export type OpeningDraftArtifact = z.infer<typeof openingDraftArtifactSchema>;
+export type PromotionDecisionArtifact = z.infer<
+  typeof promotionDecisionArtifactSchema
+>;
+export type TraceLog = z.infer<typeof traceLogSchema>;

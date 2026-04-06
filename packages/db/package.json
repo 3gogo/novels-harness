@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@libsql/client": "^0.15.15",
     "@novel-harness/schemas": "workspace:*",
     "drizzle-orm": "^0.43.1"
   }
