@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { URL } from "node:url";
 
 import OpenAI from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
@@ -67,11 +68,13 @@ export class OpenAIResponsesExecutor implements ExecutorAdapter {
   readonly modelId: string;
 
   private readonly client: OpenAI;
+  private readonly endpointLabel: string;
   private readonly reasoningEffort?: OpenAIResponsesExecutorOptions["reasoningEffort"];
 
   constructor(options: OpenAIResponsesExecutorOptions) {
     this.id = options.adapterId ?? "openai-responses";
     this.modelId = options.model ?? "gpt-5-mini";
+    this.endpointLabel = describeEndpoint(options.baseURL);
     this.reasoningEffort = options.reasoningEffort;
     this.client = new OpenAI({
       apiKey: options.apiKey,
@@ -168,7 +171,7 @@ export class OpenAIResponsesExecutor implements ExecutorAdapter {
         modelId: this.modelId,
         startedAt,
         failureType: classifyOpenAIError(error),
-        errorMessage: error instanceof Error ? error.message : String(error),
+        errorMessage: formatOpenAIError(error, this.endpointLabel, this.modelId),
       });
     }
   }
@@ -365,6 +368,36 @@ function parseReasoningEffort(
   }
 
   return undefined;
+}
+
+function describeEndpoint(baseURL?: string) {
+  if (!baseURL) {
+    return "api.openai.com";
+  }
+
+  try {
+    return new URL(baseURL).host || baseURL;
+  } catch {
+    return baseURL;
+  }
+}
+
+function formatOpenAIError(
+  error: unknown,
+  endpointLabel: string,
+  modelId: string,
+) {
+  const providerLabel = endpointLabel === "api.openai.com"
+    ? "OpenAI API"
+    : `OpenAI-compatible endpoint ${endpointLabel}`;
+
+  if (error instanceof OpenAI.APIError) {
+    return `${providerLabel} rejected model ${modelId}: ${error.status} ${error.message}`;
+  }
+
+  return error instanceof Error
+    ? `${providerLabel} failed for model ${modelId}: ${error.message}`
+    : `${providerLabel} failed for model ${modelId}: ${String(error)}`;
 }
 
 function classifyOpenAIError(error: unknown): FailureType {

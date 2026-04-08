@@ -1,4 +1,17 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { buildApp } from "./app.js";
+
+const projectRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "..",
+  "..",
+);
+const projectEnvPath = path.join(projectRoot, ".env.local");
+
+loadProjectEnv();
 
 async function main() {
   const app = buildApp();
@@ -16,3 +29,19 @@ async function main() {
 }
 
 void main();
+
+function loadProjectEnv() {
+  try {
+    process.loadEnvFile(projectEnvPath);
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return;
+    }
+
+    throw error;
+  }
+}
+
+function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
