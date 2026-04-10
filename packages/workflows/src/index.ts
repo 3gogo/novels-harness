@@ -7,4 +7,5 @@ export { IncubationWorkflowRunner } from "./runtime.js";
 export type {
   RunIncubationProjectInput,
   RunIncubationProjectResult,
+  ResumeWorkflowFromCheckpointInput,
 } from "./runtime.js";

@@ -3,15 +3,17 @@ import { randomUUID } from "node:crypto";
 import {
   persistBatchBriefSnapshot,
   persistProjectArtifact,
+  readJsonArtifact,
 } from "@novel-harness/assets";
 import { NovelHarnessRepository } from "@novel-harness/db";
 import { computeWeightedScore, suggestGateDecision } from "@novel-harness/evaluation";
-import type { ExecutorAdapter, ExecutorResult, RunContract } from "@novel-harness/executors";
+import type { ExecutorAdapter, RunContract } from "@novel-harness/executors";
 import {
   reviewScorecardSchema,
   type ArtifactKind,
   type ArtifactManifest,
   type Batch,
+  type Checkpoint,
   type FailureType,
   type GateDecision,
   type GateTask,
@@ -20,6 +22,12 @@ import {
   type Project,
   type ProjectStatus,
   type ReviewScorecard,
+  type RunAction,
+  type RunActionType,
+  type RunStepStatus,
+  type StageRun,
+  type TaskRun,
+  type WorkflowRun,
 } from "@novel-harness/schemas";
 
 import { defaultIncubationNodes } from "./definitions.js";
@@ -39,9 +47,23 @@ export interface RunIncubationProjectInput {
   autoApproveFinalGate?: boolean;
 }
 
+export interface ResumeWorkflowFromCheckpointInput {
+  rootDir: string;
+  checkpointId: string;
+  sourceWorkflowRunId?: string;
+  startNodeName?: NodeName;
+  goal?: string;
+  autoApproveFinalGate?: boolean;
+}
+
 export interface RunIncubationProjectResult {
   batch: Batch;
   project: Project;
+  workflowRun: WorkflowRun;
+  stageRuns: StageRun[];
+  taskRuns: TaskRun[];
+  checkpoints: Checkpoint[];
+  runActions: RunAction[];
   nodeRuns: NodeRun[];
   artifacts: ArtifactManifest[];
   gates: GateTask[];
@@ -50,6 +72,33 @@ export interface RunIncubationProjectResult {
 interface ArtifactState {
   manifest: ArtifactManifest;
   payload: unknown;
+}
+
+interface PlannedStageExecution {
+  stageRun: StageRun;
+  taskRun: TaskRun;
+}
+
+interface ResumePlanResult {
+  artifactState: Map<ArtifactKind, ArtifactState>;
+  plans: PlannedStageExecution[];
+  copiedCheckpoints: Checkpoint[];
+  latestCheckpointId: string | null;
+}
+
+interface ExecuteWorkflowInput {
+  rootDir: string;
+  batch: Batch;
+  project: Project;
+  workflowRun: WorkflowRun;
+  plannedStages: PlannedStageExecution[];
+  artifactState: Map<ArtifactKind, ArtifactState>;
+  batchSlug: string;
+  projectSlug: string;
+  constraints: string[];
+  goal: string;
+  autoApproveFinalGate: boolean;
+  startIndex: number;
 }
 
 export class IncubationWorkflowRunner {
@@ -64,11 +113,12 @@ export class IncubationWorkflowRunner {
     const now = new Date().toISOString();
     const batchId = input.batchId ?? randomUUID();
     const projectId = input.projectId ?? randomUUID();
+    const workflowRunId = randomUUID();
     const batchSlug = input.batchSlug ?? safeSlug(input.batchName, batchId);
     const projectSlug =
       input.projectSlug ?? safeSlug(input.projectTitle, `project-${projectId.slice(0, 8)}`);
 
-    let batch: Batch = {
+    const batch: Batch = {
       batchId,
       name: input.batchName,
       targetLane: input.targetLane,
@@ -81,7 +131,7 @@ export class IncubationWorkflowRunner {
       updatedAt: now,
     };
 
-    let project: Project = {
+    const project: Project = {
       projectId,
       slug: projectSlug,
       title: input.projectTitle,
@@ -95,31 +145,204 @@ export class IncubationWorkflowRunner {
       updatedAt: now,
     };
 
+    const workflowRun: WorkflowRun = {
+      workflowRunId,
+      projectId,
+      batchId,
+      workflowName: "incubation",
+      status: "queued",
+      currentStage: "batch_brief",
+      latestCheckpointId: null,
+      parentWorkflowRunId: null,
+      sourceCheckpointId: null,
+      startedAt: now,
+      completedAt: null,
+    };
+
+    const plannedStages = this.createInitialPlannedStages({
+      workflowRunId,
+      projectId,
+    });
+
     await this.repository.saveBatch(batch);
     await this.repository.saveProject(project);
+    await this.repository.saveWorkflowRun(workflowRun);
+    await this.persistPlannedStages(plannedStages);
+    await this.recordRunAction({
+      workflowRunId,
+      projectId,
+      actionType: "workflow_started",
+      actor: "system:runtime",
+      reason: null,
+      targetNodeName: null,
+      targetStageRunId: null,
+      targetTaskRunId: null,
+      checkpointId: null,
+      payload: {
+        workflowName: "incubation",
+      },
+      createdAt: now,
+    });
 
-    const artifactState = new Map<ArtifactKind, ArtifactState>();
-    const autoApproveFinalGate = input.autoApproveFinalGate ?? true;
+    return this.executeWorkflow({
+      rootDir: input.rootDir,
+      batch,
+      project,
+      workflowRun,
+      plannedStages,
+      artifactState: new Map<ArtifactKind, ArtifactState>(),
+      batchSlug,
+      projectSlug,
+      constraints: input.constraints,
+      goal: input.goal ?? defaultGoalForLane(input.targetLane),
+      autoApproveFinalGate: input.autoApproveFinalGate ?? true,
+      startIndex: 0,
+    });
+  }
 
-    for (const node of defaultIncubationNodes) {
+  async resumeFromCheckpoint(
+    input: ResumeWorkflowFromCheckpointInput,
+  ): Promise<RunIncubationProjectResult> {
+    const checkpoint = await this.repository.getCheckpoint(input.checkpointId);
+
+    if (!checkpoint) {
+      throw new Error("Checkpoint 不存在。");
+    }
+
+    if (checkpoint.status !== "ready") {
+      throw new Error("Checkpoint 当前不可恢复。");
+    }
+
+    if (
+      input.sourceWorkflowRunId &&
+      checkpoint.workflowRunId !== input.sourceWorkflowRunId
+    ) {
+      throw new Error("Checkpoint 不属于当前选中的运行。");
+    }
+
+    const [sourceWorkflowRun, project, batch] = await Promise.all([
+      this.repository.getWorkflowRun(checkpoint.workflowRunId),
+      this.repository.getProject(checkpoint.projectId),
+      this.repository.getProject(checkpoint.projectId).then((savedProject) =>
+        savedProject ? this.repository.getBatch(savedProject.batchId) : null,
+      ),
+    ]);
+
+    if (!sourceWorkflowRun || !project || !batch) {
+      throw new Error("无法读取 checkpoint 对应的运行上下文。");
+    }
+
+    const startNodeName = input.startNodeName ?? checkpoint.nodeName;
+    const startIndex = getNodeIndex(startNodeName);
+    const now = new Date().toISOString();
+    const workflowRunId = randomUUID();
+
+    let workflowRun: WorkflowRun = {
+      workflowRunId,
+      projectId: project.projectId,
+      batchId: batch.batchId,
+      workflowName: sourceWorkflowRun.workflowName,
+      status: "queued",
+      currentStage: startNodeName,
+      latestCheckpointId: null,
+      parentWorkflowRunId: sourceWorkflowRun.workflowRunId,
+      sourceCheckpointId: checkpoint.checkpointId,
+      startedAt: now,
+      completedAt: null,
+    };
+
+    const resumePlan = await this.createResumePlan({
+      projectId: project.projectId,
+      workflowRunId,
+      startIndex,
+      createdAt: now,
+    });
+
+    workflowRun = {
+      ...workflowRun,
+      latestCheckpointId: resumePlan.latestCheckpointId,
+    };
+
+    await this.repository.saveWorkflowRun(workflowRun);
+    await this.persistPlannedStages(resumePlan.plans);
+    await Promise.all(
+      resumePlan.copiedCheckpoints.map((copiedCheckpoint) =>
+        this.repository.saveCheckpoint(copiedCheckpoint),
+      ),
+    );
+    await this.recordRunAction({
+      workflowRunId,
+      projectId: project.projectId,
+      actionType: "workflow_started",
+      actor: "system:runtime",
+      reason: null,
+      targetNodeName: startNodeName,
+      targetStageRunId: getPlannedStage(resumePlan.plans, startIndex).stageRun.stageRunId,
+      targetTaskRunId: getPlannedStage(resumePlan.plans, startIndex).taskRun.taskRunId,
+      checkpointId: workflowRun.latestCheckpointId,
+      payload: {
+        workflowName: workflowRun.workflowName,
+        mode: "resume",
+      },
+      createdAt: now,
+    });
+    await this.recordRunAction({
+      workflowRunId,
+      projectId: project.projectId,
+      actionType: "resume_from_checkpoint",
+      actor: "user:control-room",
+      reason: `Resume from ${checkpoint.nodeName}.`,
+      targetNodeName: startNodeName,
+      targetStageRunId: getPlannedStage(resumePlan.plans, startIndex).stageRun.stageRunId,
+      targetTaskRunId: getPlannedStage(resumePlan.plans, startIndex).taskRun.taskRunId,
+      checkpointId: checkpoint.checkpointId,
+      payload: {
+        sourceWorkflowRunId: sourceWorkflowRun.workflowRunId,
+        sourceCheckpointId: checkpoint.checkpointId,
+        startNodeName,
+      },
+      createdAt: now,
+    });
+
+    return this.executeWorkflow({
+      rootDir: input.rootDir,
+      batch,
+      project,
+      workflowRun,
+      plannedStages: resumePlan.plans,
+      artifactState: resumePlan.artifactState,
+      batchSlug: safeSlug(batch.name, batch.batchId),
+      projectSlug: project.slug,
+      constraints: batch.constraints,
+      goal: input.goal ?? defaultGoalForLane(batch.targetLane),
+      autoApproveFinalGate: input.autoApproveFinalGate ?? true,
+      startIndex,
+    });
+  }
+
+  private async executeWorkflow(
+    input: ExecuteWorkflowInput,
+  ): Promise<RunIncubationProjectResult> {
+    let batch = input.batch;
+    let project = input.project;
+    let workflowRun = input.workflowRun;
+
+    for (let index = input.startIndex; index < defaultIncubationNodes.length; index += 1) {
+      const node = getWorkflowNode(index);
+      const plan = getPlannedStage(input.plannedStages, index);
       const startedAt = new Date().toISOString();
       const inputRefs = node.inputKinds
-        .map((kind) => artifactState.get(kind)?.manifest.path)
+        .map((kind) => input.artifactState.get(kind)?.manifest.path)
         .filter((value): value is string => Boolean(value));
       const runId = randomUUID();
-      const roleName = node.roleNames[0];
-
-      if (!roleName) {
-        throw new Error(`Workflow node ${node.name} is missing a role binding.`);
-      }
+      const roleName = plan.taskRun.roleName;
 
       let nodeRun: NodeRun = {
         runId,
-        projectId,
+        projectId: project.projectId,
         nodeName: node.name,
         roleName,
-        executorId:
-          node.name === "promotion_decision" ? "runtime-policy" : this.executor.id,
+        executorId: this.getExecutorIdForNode(node.name),
         status: "running",
         failureType: null,
         retryCount: 0,
@@ -130,6 +353,46 @@ export class IncubationWorkflowRunner {
       };
 
       await this.repository.saveNodeRun(nodeRun);
+
+      workflowRun = {
+        ...workflowRun,
+        status: "running",
+        currentStage: node.name,
+      };
+      await this.repository.saveWorkflowRun(workflowRun);
+      await this.updatePlannedExecution(input.plannedStages, index, {
+        stageRun: {
+          status: "running",
+          failureType: null,
+          startedAt,
+          completedAt: null,
+        },
+        taskRun: {
+          status: "running",
+          failureType: null,
+          inputRefs,
+          outputRefs: [],
+          startedAt,
+          completedAt: null,
+        },
+      });
+      await this.markDownstreamStages(input.plannedStages, index, "blocked");
+      await this.recordRunAction({
+        workflowRunId: workflowRun.workflowRunId,
+        projectId: project.projectId,
+        actionType: "stage_started",
+        actor: "system:runtime",
+        reason: null,
+        targetNodeName: node.name,
+        targetStageRunId: plan.stageRun.stageRunId,
+        targetTaskRunId: plan.taskRun.taskRunId,
+        checkpointId: workflowRun.latestCheckpointId,
+        payload: {
+          attempt: plan.stageRun.attempt,
+          inputRefs,
+        },
+        createdAt: startedAt,
+      });
 
       batch = {
         ...batch,
@@ -153,23 +416,21 @@ export class IncubationWorkflowRunner {
             ? await this.runBatchBriefNode({
                 batch,
                 project,
-                projectSlug,
-                batchSlug,
+                projectSlug: input.projectSlug,
+                batchSlug: input.batchSlug,
                 runId,
                 roleName,
                 rootDir: input.rootDir,
-                goal:
-                  input.goal ??
-                  `Incubate a commercially viable ${input.targetLane} project with strong opening retention.`,
+                goal: input.goal,
               })
             : node.name === "promotion_decision"
               ? await this.runPromotionDecisionNode({
                   rootDir: input.rootDir,
                   project,
-                  projectSlug,
+                  projectSlug: input.projectSlug,
                   runId,
                   scorecard: reviewScorecardSchema.parse(
-                    artifactState.get("review_scorecard")?.payload,
+                    input.artifactState.get("review_scorecard")?.payload,
                   ),
                 })
               : await this.runExecutorNode({
@@ -177,32 +438,97 @@ export class IncubationWorkflowRunner {
                   nodeName: node.name,
                   roleName,
                   project,
-                  projectSlug,
+                  projectSlug: input.projectSlug,
                   runId,
-                  taskBrief: buildTaskBrief(node.name, project.title, input.targetLane),
+                  taskBrief: buildTaskBrief(node.name, project.title, batch.targetLane),
                   inputRefs,
                   constraints: input.constraints,
                 });
 
-        artifactState.set(outcome.primaryManifest.kind, {
+        input.artifactState.set(outcome.primaryManifest.kind, {
           manifest: outcome.primaryManifest,
           payload: outcome.payload,
         });
 
+        const completedAt = new Date().toISOString();
         nodeRun = {
           ...nodeRun,
           status: "succeeded",
           outputRefs: outcome.outputRefs,
-          completedAt: new Date().toISOString(),
+          completedAt,
         };
         await this.repository.saveNodeRun(nodeRun);
+
+        await this.updatePlannedExecution(input.plannedStages, index, {
+          stageRun: {
+            status: "succeeded",
+            failureType: null,
+            completedAt,
+          },
+          taskRun: {
+            status: "succeeded",
+            failureType: null,
+            outputRefs: outcome.outputRefs,
+            completedAt,
+          },
+        });
+        await this.recordRunAction({
+          workflowRunId: workflowRun.workflowRunId,
+          projectId: project.projectId,
+          actionType: "stage_completed",
+          actor: "system:runtime",
+          reason: null,
+          targetNodeName: node.name,
+          targetStageRunId: plan.stageRun.stageRunId,
+          targetTaskRunId: plan.taskRun.taskRunId,
+          checkpointId: workflowRun.latestCheckpointId,
+          payload: {
+            outputRefs: outcome.outputRefs,
+          },
+          createdAt: completedAt,
+        });
+
+        const checkpoint = await this.createCheckpoint({
+          workflowRunId: workflowRun.workflowRunId,
+          projectId: project.projectId,
+          stageRunId: plan.stageRun.stageRunId,
+          nodeName: node.name,
+          artifactId: outcome.primaryManifest.artifactId,
+          createdAt: completedAt,
+        });
+        workflowRun = {
+          ...workflowRun,
+          latestCheckpointId: checkpoint.checkpointId,
+        };
+        await this.repository.saveWorkflowRun(workflowRun);
+        await this.updatePlannedExecution(input.plannedStages, index, {
+          stageRun: {},
+          taskRun: {
+            reusedFromCheckpointId: null,
+          },
+        });
+        await this.recordRunAction({
+          workflowRunId: workflowRun.workflowRunId,
+          projectId: project.projectId,
+          actionType: "checkpoint_created",
+          actor: "system:runtime",
+          reason: null,
+          targetNodeName: node.name,
+          targetStageRunId: plan.stageRun.stageRunId,
+          targetTaskRunId: plan.taskRun.taskRunId,
+          checkpointId: checkpoint.checkpointId,
+          payload: {
+            artifactId: outcome.primaryManifest.artifactId,
+          },
+          createdAt: completedAt,
+        });
 
         if (node.name === "opening_review") {
           const scorecard = reviewScorecardSchema.parse(outcome.payload);
           project = {
             ...project,
             latestScore: computeWeightedScore(scorecard),
-            updatedAt: new Date().toISOString(),
+            updatedAt: completedAt,
           };
           await this.repository.saveProject(project);
         }
@@ -210,56 +536,187 @@ export class IncubationWorkflowRunner {
         if (node.name === "promotion_decision") {
           const decision = extractDecision(outcome.payload);
           const gate = await this.createFinalGate({
-            projectId,
+            projectId: project.projectId,
             outputRefs: outcome.outputRefs,
             decision,
-            autoApprove: autoApproveFinalGate,
+            autoApprove: input.autoApproveFinalGate,
           });
           await this.repository.saveGateTask(gate);
+          await this.recordRunAction({
+            workflowRunId: workflowRun.workflowRunId,
+            projectId: project.projectId,
+            actionType: "gate_recorded",
+            actor: gate.approvedBy ?? "system:gate",
+            reason: null,
+            targetNodeName: node.name,
+            targetStageRunId: plan.stageRun.stageRunId,
+            targetTaskRunId: plan.taskRun.taskRunId,
+            checkpointId: checkpoint.checkpointId,
+            payload: {
+              gateId: gate.gateId,
+              status: gate.status,
+              decision: gate.decision,
+            },
+            createdAt: gate.updatedAt,
+          });
 
-          project = {
-            ...project,
-            decision,
-            status: autoApproveFinalGate
-              ? mapDecisionToProjectStatus(decision)
-              : "awaiting_gate",
-            stage: autoApproveFinalGate ? "serial_ready" : "promotion_decision",
-            updatedAt: new Date().toISOString(),
-          };
+          if (input.autoApproveFinalGate) {
+            project = {
+              ...project,
+              decision,
+              status: mapDecisionToProjectStatus(decision),
+              stage: "serial_ready",
+              updatedAt: completedAt,
+            };
 
-          batch = {
-            ...batch,
-            status: autoApproveFinalGate ? "completed" : "awaiting_gate",
-            currentStage: node.name,
-            updatedAt: new Date().toISOString(),
-          };
+            batch = {
+              ...batch,
+              status: "completed",
+              currentStage: node.name,
+              updatedAt: completedAt,
+            };
+
+            workflowRun = {
+              ...workflowRun,
+              status: "succeeded",
+              currentStage: null,
+              completedAt,
+            };
+            await this.repository.saveWorkflowRun(workflowRun);
+            await this.recordRunAction({
+              workflowRunId: workflowRun.workflowRunId,
+              projectId: project.projectId,
+              actionType: "workflow_completed",
+              actor: "system:runtime",
+              reason: null,
+              targetNodeName: node.name,
+              targetStageRunId: plan.stageRun.stageRunId,
+              targetTaskRunId: plan.taskRun.taskRunId,
+              checkpointId: checkpoint.checkpointId,
+              payload: {
+                finalDecision: decision,
+              },
+              createdAt: completedAt,
+            });
+          } else {
+            project = {
+              ...project,
+              decision,
+              status: "awaiting_gate",
+              stage: "promotion_decision",
+              updatedAt: completedAt,
+            };
+
+            batch = {
+              ...batch,
+              status: "awaiting_gate",
+              currentStage: node.name,
+              updatedAt: completedAt,
+            };
+
+            workflowRun = {
+              ...workflowRun,
+              status: "awaiting_review",
+              currentStage: node.name,
+              completedAt: null,
+            };
+            await this.repository.saveWorkflowRun(workflowRun);
+            await this.updatePlannedExecution(input.plannedStages, index, {
+              stageRun: {
+                status: "awaiting_review",
+              },
+              taskRun: {},
+            });
+          }
 
           await this.repository.saveProject(project);
           await this.repository.saveBatch(batch);
+        } else {
+          await this.prepareNextStage(input.plannedStages, index);
         }
       } catch (error) {
         const failureType =
           error instanceof WorkflowExecutionError
             ? error.failureType
             : "terminal";
+        const completedAt = new Date().toISOString();
+        const stageStatus =
+          failureType === "review_required" ? "awaiting_review" : "failed";
+
         nodeRun = {
           ...nodeRun,
           status: "failed",
           failureType,
-          completedAt: new Date().toISOString(),
+          completedAt,
         };
         await this.repository.saveNodeRun(nodeRun);
+
+        await this.updatePlannedExecution(input.plannedStages, index, {
+          stageRun: {
+            status: stageStatus,
+            failureType,
+            completedAt,
+          },
+          taskRun: {
+            status: stageStatus,
+            failureType,
+            completedAt,
+          },
+        });
+        await this.markDownstreamStages(input.plannedStages, index, "blocked");
+
+        workflowRun = {
+          ...workflowRun,
+          status: failureType === "review_required" ? "awaiting_review" : "failed",
+          currentStage: node.name,
+          completedAt: failureType === "review_required" ? null : completedAt,
+        };
+        await this.repository.saveWorkflowRun(workflowRun);
+
+        await this.recordRunAction({
+          workflowRunId: workflowRun.workflowRunId,
+          projectId: project.projectId,
+          actionType: "stage_failed",
+          actor: "system:runtime",
+          reason: extractErrorMessage(error),
+          targetNodeName: node.name,
+          targetStageRunId: plan.stageRun.stageRunId,
+          targetTaskRunId: plan.taskRun.taskRunId,
+          checkpointId: workflowRun.latestCheckpointId,
+          payload: {
+            failureType,
+          },
+          createdAt: completedAt,
+        });
+
+        if (failureType !== "review_required") {
+          await this.recordRunAction({
+            workflowRunId: workflowRun.workflowRunId,
+            projectId: project.projectId,
+            actionType: "workflow_failed",
+            actor: "system:runtime",
+            reason: extractErrorMessage(error),
+            targetNodeName: node.name,
+            targetStageRunId: plan.stageRun.stageRunId,
+            targetTaskRunId: plan.taskRun.taskRunId,
+            checkpointId: workflowRun.latestCheckpointId,
+            payload: {
+              failureType,
+            },
+            createdAt: completedAt,
+          });
+        }
 
         project = {
           ...project,
           status: mapFailureToProjectStatus(failureType),
-          updatedAt: new Date().toISOString(),
+          updatedAt: completedAt,
         };
         batch = {
           ...batch,
           status: failureType === "review_required" ? "awaiting_gate" : "failed",
           currentStage: node.name,
-          updatedAt: new Date().toISOString(),
+          updatedAt: completedAt,
         };
         await this.repository.saveProject(project);
         await this.repository.saveBatch(batch);
@@ -267,25 +724,370 @@ export class IncubationWorkflowRunner {
       }
     }
 
-    const [savedBatch, savedProject, nodeRuns, artifacts, gates] = await Promise.all([
+    if (workflowRun.status === "running") {
+      const completedAt = new Date().toISOString();
+      workflowRun = {
+        ...workflowRun,
+        status: "succeeded",
+        currentStage: null,
+        completedAt,
+      };
+      await this.repository.saveWorkflowRun(workflowRun);
+      await this.recordRunAction({
+        workflowRunId: workflowRun.workflowRunId,
+        projectId: project.projectId,
+        actionType: "workflow_completed",
+        actor: "system:runtime",
+        reason: null,
+        targetNodeName: null,
+        targetStageRunId: null,
+        targetTaskRunId: null,
+        checkpointId: workflowRun.latestCheckpointId,
+        payload: {},
+        createdAt: completedAt,
+      });
+    }
+
+    return this.finalizeResult(batch.batchId, project.projectId, workflowRun.workflowRunId);
+  }
+
+  private async finalizeResult(
+    batchId: string,
+    projectId: string,
+    workflowRunId: string,
+  ): Promise<RunIncubationProjectResult> {
+    const [
+      savedBatch,
+      savedProject,
+      savedWorkflowRun,
+      stageRuns,
+      taskRuns,
+      checkpoints,
+      runActions,
+      nodeRuns,
+      artifacts,
+      gates,
+    ] = await Promise.all([
       this.repository.getBatch(batchId),
       this.repository.getProject(projectId),
+      this.repository.getWorkflowRun(workflowRunId),
+      this.repository.listStageRunsForWorkflowRun(workflowRunId),
+      this.repository.listTaskRunsForWorkflowRun(workflowRunId),
+      this.repository.listCheckpointsForWorkflowRun(workflowRunId),
+      this.repository.listRunActionsForWorkflowRun(workflowRunId),
       this.repository.listNodeRunsForProject(projectId),
       this.repository.listArtifactsForProject(projectId),
       this.repository.listGateTasksForProject(projectId),
     ]);
 
-    if (!savedBatch || !savedProject) {
-      throw new Error("Workflow finished without persisted batch or project.");
+    if (!savedBatch || !savedProject || !savedWorkflowRun) {
+      throw new Error("Workflow finished without persisted control state.");
     }
 
     return {
       batch: savedBatch,
       project: savedProject,
+      workflowRun: savedWorkflowRun,
+      stageRuns,
+      taskRuns,
+      checkpoints,
+      runActions,
       nodeRuns,
       artifacts,
       gates,
     };
+  }
+
+  private createInitialPlannedStages(input: {
+    workflowRunId: string;
+    projectId: string;
+  }): PlannedStageExecution[] {
+    return defaultIncubationNodes
+      .map((node, index) => {
+        const roleName = node.roleNames[0];
+
+        if (!roleName) {
+          throw new Error(`Workflow node ${node.name} is missing a role binding.`);
+        }
+
+        const status: RunStepStatus = index === 0 ? "ready" : "pending";
+        return {
+          stageRun: {
+            stageRunId: randomUUID(),
+            workflowRunId: input.workflowRunId,
+            projectId: input.projectId,
+            nodeName: node.name,
+            attempt: 1,
+            status,
+            failureType: null,
+            startedAt: null,
+            completedAt: null,
+          },
+          taskRun: {
+            taskRunId: randomUUID(),
+            workflowRunId: input.workflowRunId,
+            stageRunId: "",
+            projectId: input.projectId,
+            nodeName: node.name,
+            roleName,
+            executorId: this.getExecutorIdForNode(node.name),
+            attempt: 1,
+            status,
+            failureType: null,
+            inputRefs: [],
+            outputRefs: [],
+            reusedFromCheckpointId: null,
+            startedAt: null,
+            completedAt: null,
+          },
+        };
+      })
+      .map((plan) => ({
+        stageRun: plan.stageRun,
+        taskRun: {
+          ...plan.taskRun,
+          stageRunId: plan.stageRun.stageRunId,
+        },
+      }));
+  }
+
+  private async createResumePlan(input: {
+    projectId: string;
+    workflowRunId: string;
+    startIndex: number;
+    createdAt: string;
+  }): Promise<ResumePlanResult> {
+    const artifactState = new Map<ArtifactKind, ArtifactState>();
+    const copiedCheckpoints: Checkpoint[] = [];
+    const plans: PlannedStageExecution[] = [];
+    let latestCheckpointId: string | null = null;
+
+    for (const [index, node] of defaultIncubationNodes.entries()) {
+      const roleName = node.roleNames[0];
+
+      if (!roleName) {
+        throw new Error(`Workflow node ${node.name} is missing a role binding.`);
+      }
+
+      const status =
+        index < input.startIndex
+          ? "reused_from_checkpoint"
+          : index === input.startIndex
+            ? "ready"
+            : "pending";
+      const inputRefs =
+        index < input.startIndex
+          ? node.inputKinds
+              .map((kind) => artifactState.get(kind)?.manifest.path)
+              .filter((value): value is string => Boolean(value))
+          : [];
+      const stageRunId = randomUUID();
+      let outputRefs: string[] = [];
+      let reusedFromCheckpointId: string | null = null;
+
+      if (index < input.startIndex) {
+        const artifactKind = mapNodeToArtifactKind(node.name);
+        const manifest = await this.requireLatestArtifact(input.projectId, artifactKind);
+        const payload = await readArtifactPayload(manifest);
+
+        artifactState.set(artifactKind, {
+          manifest,
+          payload,
+        });
+        outputRefs = [manifest.path];
+
+        const copiedCheckpoint: Checkpoint = {
+          checkpointId: randomUUID(),
+          workflowRunId: input.workflowRunId,
+          projectId: input.projectId,
+          stageRunId,
+          nodeName: node.name,
+          status: "ready",
+          artifactId: manifest.artifactId,
+          createdAt: input.createdAt,
+        };
+        copiedCheckpoints.push(copiedCheckpoint);
+        latestCheckpointId = copiedCheckpoint.checkpointId;
+        reusedFromCheckpointId = copiedCheckpoint.checkpointId;
+      }
+
+      plans.push({
+        stageRun: {
+          stageRunId,
+          workflowRunId: input.workflowRunId,
+          projectId: input.projectId,
+          nodeName: node.name,
+          attempt: 1,
+          status,
+          failureType: null,
+          startedAt: index < input.startIndex ? input.createdAt : null,
+          completedAt: index < input.startIndex ? input.createdAt : null,
+        },
+        taskRun: {
+          taskRunId: randomUUID(),
+          workflowRunId: input.workflowRunId,
+          stageRunId,
+          projectId: input.projectId,
+          nodeName: node.name,
+          roleName,
+          executorId: this.getExecutorIdForNode(node.name),
+          attempt: 1,
+          status,
+          failureType: null,
+          inputRefs,
+          outputRefs,
+          reusedFromCheckpointId,
+          startedAt: index < input.startIndex ? input.createdAt : null,
+          completedAt: index < input.startIndex ? input.createdAt : null,
+        },
+      });
+    }
+
+    return {
+      artifactState,
+      plans,
+      copiedCheckpoints,
+      latestCheckpointId,
+    };
+  }
+
+  private async requireLatestArtifact(projectId: string, kind: ArtifactKind) {
+    const manifest = await this.repository.getLatestArtifact(projectId, kind);
+
+    if (!manifest) {
+      throw new Error(`无法从 checkpoint 恢复，缺少 ${kind} 产物。`);
+    }
+
+    return manifest;
+  }
+
+  private async persistPlannedStages(plans: PlannedStageExecution[]) {
+    await Promise.all(
+      plans.flatMap((plan) => [
+        this.repository.saveStageRun(plan.stageRun),
+        this.repository.saveTaskRun(plan.taskRun),
+      ]),
+    );
+  }
+
+  private async updatePlannedExecution(
+    plans: PlannedStageExecution[],
+    index: number,
+    updates: {
+      stageRun: Partial<StageRun>;
+      taskRun: Partial<TaskRun>;
+    },
+  ) {
+    const plan = getPlannedStage(plans, index);
+
+    plan.stageRun = {
+      ...plan.stageRun,
+      ...updates.stageRun,
+    };
+    plan.taskRun = {
+      ...plan.taskRun,
+      ...updates.taskRun,
+    };
+
+    await Promise.all([
+      this.repository.saveStageRun(plan.stageRun),
+      this.repository.saveTaskRun(plan.taskRun),
+    ]);
+  }
+
+  private async markDownstreamStages(
+    plans: PlannedStageExecution[],
+    index: number,
+    status: Extract<RunStepStatus, "blocked" | "pending">,
+  ) {
+    for (let currentIndex = index + 1; currentIndex < plans.length; currentIndex += 1) {
+      const plan = getPlannedStage(plans, currentIndex);
+
+      if (isTerminalStepStatus(plan.stageRun.status)) {
+        continue;
+      }
+
+      await this.updatePlannedExecution(plans, currentIndex, {
+        stageRun: {
+          status,
+        },
+        taskRun: {
+          status,
+        },
+      });
+    }
+  }
+
+  private async prepareNextStage(plans: PlannedStageExecution[], index: number) {
+    for (let currentIndex = index + 1; currentIndex < plans.length; currentIndex += 1) {
+      const plan = getPlannedStage(plans, currentIndex);
+
+      if (isTerminalStepStatus(plan.stageRun.status)) {
+        continue;
+      }
+
+      await this.updatePlannedExecution(plans, currentIndex, {
+        stageRun: {
+          status: currentIndex === index + 1 ? "ready" : "pending",
+        },
+        taskRun: {
+          status: currentIndex === index + 1 ? "ready" : "pending",
+        },
+      });
+    }
+  }
+
+  private async createCheckpoint(input: {
+    workflowRunId: string;
+    projectId: string;
+    stageRunId: string;
+    nodeName: NodeName;
+    artifactId: string | null;
+    createdAt: string;
+  }) {
+    const checkpoint: Checkpoint = {
+      checkpointId: randomUUID(),
+      workflowRunId: input.workflowRunId,
+      projectId: input.projectId,
+      stageRunId: input.stageRunId,
+      nodeName: input.nodeName,
+      status: "ready",
+      artifactId: input.artifactId,
+      createdAt: input.createdAt,
+    };
+    await this.repository.saveCheckpoint(checkpoint);
+    return checkpoint;
+  }
+
+  private async recordRunAction(input: {
+    workflowRunId: string;
+    projectId: string;
+    actionType: RunActionType;
+    actor: string;
+    reason: string | null;
+    targetNodeName: NodeName | null;
+    targetStageRunId: string | null;
+    targetTaskRunId: string | null;
+    checkpointId: string | null;
+    payload: Record<string, unknown>;
+    createdAt: string;
+  }) {
+    const action: RunAction = {
+      actionId: randomUUID(),
+      workflowRunId: input.workflowRunId,
+      projectId: input.projectId,
+      actionType: input.actionType,
+      actor: input.actor,
+      reason: input.reason,
+      targetNodeName: input.targetNodeName,
+      targetStageRunId: input.targetStageRunId,
+      targetTaskRunId: input.targetTaskRunId,
+      checkpointId: input.checkpointId,
+      payload: input.payload,
+      createdAt: input.createdAt,
+    };
+    await this.repository.saveRunAction(action);
+    return action;
   }
 
   private async runBatchBriefNode(input: {
@@ -485,6 +1287,10 @@ export class IncubationWorkflowRunner {
       updatedAt: now,
     });
   }
+
+  private getExecutorIdForNode(nodeName: NodeName) {
+    return nodeName === "promotion_decision" ? "runtime-policy" : this.executor.id;
+  }
 }
 
 class WorkflowExecutionError extends Error {
@@ -551,5 +1357,63 @@ function mapFailureToProjectStatus(failureType: FailureType) {
       return "killed";
     default:
       return "retrying";
+  }
+}
+
+function isTerminalStepStatus(status: RunStepStatus) {
+  return [
+    "succeeded",
+    "failed",
+    "awaiting_review",
+    "skipped",
+    "rolled_back",
+    "reused_from_checkpoint",
+  ].includes(status);
+}
+
+function extractErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function getPlannedStage(plans: PlannedStageExecution[], index: number) {
+  const plan = plans[index];
+
+  if (!plan) {
+    throw new Error(`Missing planned stage at index ${index}.`);
+  }
+
+  return plan;
+}
+
+function getWorkflowNode(index: number) {
+  const node = defaultIncubationNodes[index];
+
+  if (!node) {
+    throw new Error(`Missing workflow node at index ${index}.`);
+  }
+
+  return node;
+}
+
+function getNodeIndex(nodeName: NodeName) {
+  const index = defaultIncubationNodes.findIndex((node) => node.name === nodeName);
+
+  if (index < 0) {
+    throw new Error(`Unknown workflow node ${nodeName}.`);
+  }
+
+  return index;
+}
+
+function defaultGoalForLane(targetLane: string) {
+  return `Incubate a commercially viable ${targetLane} project with strong opening retention.`;
+}
+
+async function readArtifactPayload(manifest: ArtifactManifest) {
+  switch (manifest.kind) {
+    case "review_scorecard":
+      return readJsonArtifact<ReviewScorecard>(manifest.path);
+    default:
+      return null;
   }
 }

@@ -110,4 +110,84 @@ async function bootstrapDatabase(client: Client) {
       updated_at TEXT NOT NULL
     )
   `);
+
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS workflow_runs (
+      workflow_run_id TEXT PRIMARY KEY NOT NULL,
+      project_id TEXT NOT NULL,
+      batch_id TEXT NOT NULL,
+      workflow_name TEXT NOT NULL,
+      status TEXT NOT NULL,
+      current_stage TEXT,
+      latest_checkpoint_id TEXT,
+      parent_workflow_run_id TEXT,
+      source_checkpoint_id TEXT,
+      started_at TEXT NOT NULL,
+      completed_at TEXT
+    )
+  `);
+
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS stage_runs (
+      stage_run_id TEXT PRIMARY KEY NOT NULL,
+      workflow_run_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      node_name TEXT NOT NULL,
+      attempt INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      failure_type TEXT,
+      started_at TEXT,
+      completed_at TEXT
+    )
+  `);
+
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS task_runs (
+      task_run_id TEXT PRIMARY KEY NOT NULL,
+      workflow_run_id TEXT NOT NULL,
+      stage_run_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      node_name TEXT NOT NULL,
+      role_name TEXT NOT NULL,
+      executor_id TEXT NOT NULL,
+      attempt INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      failure_type TEXT,
+      input_refs_json TEXT NOT NULL,
+      output_refs_json TEXT NOT NULL,
+      reused_from_checkpoint_id TEXT,
+      started_at TEXT,
+      completed_at TEXT
+    )
+  `);
+
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS checkpoints (
+      checkpoint_id TEXT PRIMARY KEY NOT NULL,
+      workflow_run_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      stage_run_id TEXT NOT NULL,
+      node_name TEXT NOT NULL,
+      status TEXT NOT NULL,
+      artifact_id TEXT,
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS run_actions (
+      action_id TEXT PRIMARY KEY NOT NULL,
+      workflow_run_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      action_type TEXT NOT NULL,
+      actor TEXT NOT NULL,
+      reason TEXT,
+      target_node_name TEXT,
+      target_stage_run_id TEXT,
+      target_task_run_id TEXT,
+      checkpoint_id TEXT,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )
+  `);
 }

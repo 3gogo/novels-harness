@@ -1,26 +1,41 @@
-import { eq, desc } from "drizzle-orm";
+﻿import { eq, desc } from "drizzle-orm";
 
 import {
   artifactManifestSchema,
   batchSchema,
+  checkpointSchema,
   gateTaskSchema,
   nodeRunSchema,
   projectSchema,
+  runActionSchema,
+  stageRunSchema,
+  taskRunSchema,
+  workflowRunSchema,
   type ArtifactKind,
   type ArtifactManifest,
   type Batch,
+  type Checkpoint,
   type GateTask,
   type NodeRun,
   type Project,
+  type RunAction,
+  type StageRun,
+  type TaskRun,
+  type WorkflowRun,
 } from "@novel-harness/schemas";
 
 import type { HarnessDatabase } from "./client.js";
 import {
   artifactManifestsTable,
   batchesTable,
+  checkpointsTable,
   gateTasksTable,
   nodeRunsTable,
   projectsTable,
+  runActionsTable,
+  stageRunsTable,
+  taskRunsTable,
+  workflowRunsTable,
 } from "./schema.js";
 
 export class NovelHarnessRepository {
@@ -232,6 +247,16 @@ export class NovelHarnessRepository {
     return rows.map((row) => artifactManifestSchema.parse(row));
   }
 
+  async getArtifactManifest(artifactId: string) {
+    const [row] = await this.db
+      .select()
+      .from(artifactManifestsTable)
+      .where(eq(artifactManifestsTable.artifactId, artifactId))
+      .limit(1);
+
+    return row ? artifactManifestSchema.parse(row) : null;
+  }
+
   async getLatestArtifact(projectId: string, kind: ArtifactKind) {
     const [row] = await this.db
       .select()
@@ -252,6 +277,252 @@ export class NovelHarnessRepository {
 
     const match = candidates.find((candidate) => candidate.kind === kind);
     return match ? artifactManifestSchema.parse(match) : null;
+  }
+
+  async saveWorkflowRun(workflowRun: WorkflowRun) {
+    const input = workflowRunSchema.parse(workflowRun);
+
+    await this.db
+      .insert(workflowRunsTable)
+      .values({
+        workflowRunId: input.workflowRunId,
+        projectId: input.projectId,
+        batchId: input.batchId,
+        workflowName: input.workflowName,
+        status: input.status,
+        currentStage: input.currentStage,
+        latestCheckpointId: input.latestCheckpointId,
+        parentWorkflowRunId: input.parentWorkflowRunId,
+        sourceCheckpointId: input.sourceCheckpointId,
+        startedAt: input.startedAt,
+        completedAt: input.completedAt,
+      })
+      .onConflictDoUpdate({
+        target: workflowRunsTable.workflowRunId,
+        set: {
+          projectId: input.projectId,
+          batchId: input.batchId,
+          workflowName: input.workflowName,
+          status: input.status,
+          currentStage: input.currentStage,
+          latestCheckpointId: input.latestCheckpointId,
+          parentWorkflowRunId: input.parentWorkflowRunId,
+          sourceCheckpointId: input.sourceCheckpointId,
+          startedAt: input.startedAt,
+          completedAt: input.completedAt,
+        },
+      });
+  }
+
+  async getWorkflowRun(workflowRunId: string) {
+    const [row] = await this.db
+      .select()
+      .from(workflowRunsTable)
+      .where(eq(workflowRunsTable.workflowRunId, workflowRunId))
+      .limit(1);
+
+    return row ? this.mapWorkflowRun(row) : null;
+  }
+
+  async listWorkflowRunsForProject(projectId: string, limit = 10) {
+    const rows = await this.db
+      .select()
+      .from(workflowRunsTable)
+      .where(eq(workflowRunsTable.projectId, projectId))
+      .orderBy(desc(workflowRunsTable.startedAt))
+      .limit(limit);
+
+    return rows.map((row) => this.mapWorkflowRun(row));
+  }
+
+  async saveStageRun(stageRun: StageRun) {
+    const input = stageRunSchema.parse(stageRun);
+
+    await this.db
+      .insert(stageRunsTable)
+      .values({
+        stageRunId: input.stageRunId,
+        workflowRunId: input.workflowRunId,
+        projectId: input.projectId,
+        nodeName: input.nodeName,
+        attempt: input.attempt,
+        status: input.status,
+        failureType: input.failureType,
+        startedAt: input.startedAt,
+        completedAt: input.completedAt,
+      })
+      .onConflictDoUpdate({
+        target: stageRunsTable.stageRunId,
+        set: {
+          workflowRunId: input.workflowRunId,
+          projectId: input.projectId,
+          nodeName: input.nodeName,
+          attempt: input.attempt,
+          status: input.status,
+          failureType: input.failureType,
+          startedAt: input.startedAt,
+          completedAt: input.completedAt,
+        },
+      });
+  }
+
+  async listStageRunsForWorkflowRun(workflowRunId: string) {
+    const rows = await this.db
+      .select()
+      .from(stageRunsTable)
+      .where(eq(stageRunsTable.workflowRunId, workflowRunId))
+      .orderBy(desc(stageRunsTable.attempt), desc(stageRunsTable.startedAt));
+
+    return rows.map((row) => this.mapStageRun(row));
+  }
+
+  async saveTaskRun(taskRun: TaskRun) {
+    const input = taskRunSchema.parse(taskRun);
+
+    await this.db
+      .insert(taskRunsTable)
+      .values({
+        taskRunId: input.taskRunId,
+        workflowRunId: input.workflowRunId,
+        stageRunId: input.stageRunId,
+        projectId: input.projectId,
+        nodeName: input.nodeName,
+        roleName: input.roleName,
+        executorId: input.executorId,
+        attempt: input.attempt,
+        status: input.status,
+        failureType: input.failureType,
+        inputRefsJson: JSON.stringify(input.inputRefs),
+        outputRefsJson: JSON.stringify(input.outputRefs),
+        reusedFromCheckpointId: input.reusedFromCheckpointId,
+        startedAt: input.startedAt,
+        completedAt: input.completedAt,
+      })
+      .onConflictDoUpdate({
+        target: taskRunsTable.taskRunId,
+        set: {
+          workflowRunId: input.workflowRunId,
+          stageRunId: input.stageRunId,
+          projectId: input.projectId,
+          nodeName: input.nodeName,
+          roleName: input.roleName,
+          executorId: input.executorId,
+          attempt: input.attempt,
+          status: input.status,
+          failureType: input.failureType,
+          inputRefsJson: JSON.stringify(input.inputRefs),
+          outputRefsJson: JSON.stringify(input.outputRefs),
+          reusedFromCheckpointId: input.reusedFromCheckpointId,
+          startedAt: input.startedAt,
+          completedAt: input.completedAt,
+        },
+      });
+  }
+
+  async listTaskRunsForWorkflowRun(workflowRunId: string) {
+    const rows = await this.db
+      .select()
+      .from(taskRunsTable)
+      .where(eq(taskRunsTable.workflowRunId, workflowRunId))
+      .orderBy(desc(taskRunsTable.attempt), desc(taskRunsTable.startedAt));
+
+    return rows.map((row) => this.mapTaskRun(row));
+  }
+
+  async saveCheckpoint(checkpoint: Checkpoint) {
+    const input = checkpointSchema.parse(checkpoint);
+
+    await this.db
+      .insert(checkpointsTable)
+      .values({
+        checkpointId: input.checkpointId,
+        workflowRunId: input.workflowRunId,
+        projectId: input.projectId,
+        stageRunId: input.stageRunId,
+        nodeName: input.nodeName,
+        status: input.status,
+        artifactId: input.artifactId,
+        createdAt: input.createdAt,
+      })
+      .onConflictDoUpdate({
+        target: checkpointsTable.checkpointId,
+        set: {
+          workflowRunId: input.workflowRunId,
+          projectId: input.projectId,
+          stageRunId: input.stageRunId,
+          nodeName: input.nodeName,
+          status: input.status,
+          artifactId: input.artifactId,
+          createdAt: input.createdAt,
+        },
+      });
+  }
+
+  async getCheckpoint(checkpointId: string) {
+    const [row] = await this.db
+      .select()
+      .from(checkpointsTable)
+      .where(eq(checkpointsTable.checkpointId, checkpointId))
+      .limit(1);
+
+    return row ? this.mapCheckpoint(row) : null;
+  }
+
+  async listCheckpointsForWorkflowRun(workflowRunId: string) {
+    const rows = await this.db
+      .select()
+      .from(checkpointsTable)
+      .where(eq(checkpointsTable.workflowRunId, workflowRunId))
+      .orderBy(desc(checkpointsTable.createdAt));
+
+    return rows.map((row) => this.mapCheckpoint(row));
+  }
+
+  async saveRunAction(runAction: RunAction) {
+    const input = runActionSchema.parse(runAction);
+
+    await this.db
+      .insert(runActionsTable)
+      .values({
+        actionId: input.actionId,
+        workflowRunId: input.workflowRunId,
+        projectId: input.projectId,
+        actionType: input.actionType,
+        actor: input.actor,
+        reason: input.reason,
+        targetNodeName: input.targetNodeName,
+        targetStageRunId: input.targetStageRunId,
+        targetTaskRunId: input.targetTaskRunId,
+        checkpointId: input.checkpointId,
+        payloadJson: JSON.stringify(input.payload),
+        createdAt: input.createdAt,
+      })
+      .onConflictDoUpdate({
+        target: runActionsTable.actionId,
+        set: {
+          workflowRunId: input.workflowRunId,
+          projectId: input.projectId,
+          actionType: input.actionType,
+          actor: input.actor,
+          reason: input.reason,
+          targetNodeName: input.targetNodeName,
+          targetStageRunId: input.targetStageRunId,
+          targetTaskRunId: input.targetTaskRunId,
+          checkpointId: input.checkpointId,
+          payloadJson: JSON.stringify(input.payload),
+          createdAt: input.createdAt,
+        },
+      });
+  }
+
+  async listRunActionsForWorkflowRun(workflowRunId: string) {
+    const rows = await this.db
+      .select()
+      .from(runActionsTable)
+      .where(eq(runActionsTable.workflowRunId, workflowRunId))
+      .orderBy(desc(runActionsTable.createdAt));
+
+    return rows.map((row) => this.mapRunAction(row));
   }
 
   async saveGateTask(gateTask: GateTask) {
@@ -319,6 +590,55 @@ export class NovelHarnessRepository {
       projectIds: JSON.parse(row.projectIdsJson) as string[],
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
+    });
+  }
+
+  private mapWorkflowRun(row: typeof workflowRunsTable.$inferSelect) {
+    return workflowRunSchema.parse(row);
+  }
+
+  private mapStageRun(row: typeof stageRunsTable.$inferSelect) {
+    return stageRunSchema.parse(row);
+  }
+
+  private mapTaskRun(row: typeof taskRunsTable.$inferSelect) {
+    return taskRunSchema.parse({
+      taskRunId: row.taskRunId,
+      workflowRunId: row.workflowRunId,
+      stageRunId: row.stageRunId,
+      projectId: row.projectId,
+      nodeName: row.nodeName,
+      roleName: row.roleName,
+      executorId: row.executorId,
+      attempt: row.attempt,
+      status: row.status,
+      failureType: row.failureType,
+      inputRefs: JSON.parse(row.inputRefsJson) as string[],
+      outputRefs: JSON.parse(row.outputRefsJson) as string[],
+      reusedFromCheckpointId: row.reusedFromCheckpointId,
+      startedAt: row.startedAt,
+      completedAt: row.completedAt,
+    });
+  }
+
+  private mapCheckpoint(row: typeof checkpointsTable.$inferSelect) {
+    return checkpointSchema.parse(row);
+  }
+
+  private mapRunAction(row: typeof runActionsTable.$inferSelect) {
+    return runActionSchema.parse({
+      actionId: row.actionId,
+      workflowRunId: row.workflowRunId,
+      projectId: row.projectId,
+      actionType: row.actionType,
+      actor: row.actor,
+      reason: row.reason,
+      targetNodeName: row.targetNodeName,
+      targetStageRunId: row.targetStageRunId,
+      targetTaskRunId: row.targetTaskRunId,
+      checkpointId: row.checkpointId,
+      payload: JSON.parse(row.payloadJson) as Record<string, unknown>,
+      createdAt: row.createdAt,
     });
   }
 }

@@ -1,5 +1,6 @@
-import path from "node:path";
+﻿import path from "node:path";
 
+import { readTextArtifact } from "@novel-harness/assets";
 import { createDatabaseHandle, NovelHarnessRepository } from "@novel-harness/db";
 import { createOpenAIExecutorFromEnv, type ResolvedExecutor } from "@novel-harness/executors";
 import Fastify from "fastify";
@@ -41,6 +42,158 @@ export function buildApp() {
     roles: Object.values(defaultPromptTemplates),
   }));
 
+  app.get("/api/artifacts/:artifactId/content", async (request, reply) => {
+    const { artifactId } = request.params as { artifactId: string };
+    const databaseHandle = await createDatabaseHandle(databasePath);
+
+    try {
+      const repository = new NovelHarnessRepository(databaseHandle.db);
+      const manifest = await repository.getArtifactManifest(artifactId);
+
+      if (!manifest) {
+        reply.code(404);
+        return {
+          ok: false,
+          error: "产物不存在。",
+        };
+      }
+
+      const content = await readTextArtifact(manifest.path);
+      return {
+        ok: true,
+        manifest,
+        content,
+      };
+    } catch (error) {
+      request.log.error(error);
+      reply.code(500);
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      await databaseHandle.close();
+    }
+  });
+
+  app.get("/api/runs/:runId", async (request, reply) => {
+    const { runId } = request.params as { runId: string };
+    const databaseHandle = await createDatabaseHandle(databasePath);
+
+    try {
+      const repository = new NovelHarnessRepository(databaseHandle.db);
+      const workflowRun = await repository.getWorkflowRun(runId);
+
+      if (!workflowRun) {
+        reply.code(404);
+        return {
+          ok: false,
+          error: "运行记录不存在。",
+        };
+      }
+
+      const [project, batch, stageRuns, taskRuns, checkpoints, runActions, nodeRuns, artifacts, gates] =
+        await Promise.all([
+          repository.getProject(workflowRun.projectId),
+          repository.getBatch(workflowRun.batchId),
+          repository.listStageRunsForWorkflowRun(workflowRun.workflowRunId),
+          repository.listTaskRunsForWorkflowRun(workflowRun.workflowRunId),
+          repository.listCheckpointsForWorkflowRun(workflowRun.workflowRunId),
+          repository.listRunActionsForWorkflowRun(workflowRun.workflowRunId),
+          repository.listNodeRunsForProject(workflowRun.projectId),
+          repository.listArtifactsForProject(workflowRun.projectId),
+          repository.listGateTasksForProject(workflowRun.projectId),
+        ]);
+
+      if (!project || !batch) {
+        reply.code(404);
+        return {
+          ok: false,
+          error: "运行记录缺少关联的项目或批次。",
+        };
+      }
+
+      return {
+        ok: true,
+        workspaceRoot,
+        databasePath,
+        executor: publicExecutorInfo,
+        run: {
+          workflowRun,
+          batch,
+          project,
+          stageRuns,
+          taskRuns,
+          checkpoints,
+          runActions,
+          nodeRuns,
+          artifacts,
+          gates,
+        },
+      };
+    } catch (error) {
+      request.log.error(error);
+      reply.code(500);
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      await databaseHandle.close();
+    }
+  });
+
+  app.post("/api/runs/:runId/resume", async (request, reply) => {
+    const { runId } = request.params as { runId: string };
+    const body = (request.body as Partial<{
+      checkpointId: string;
+      startNodeName: string;
+      goal: string;
+      autoApproveFinalGate: boolean;
+    }>) ?? {};
+    const databaseHandle = await createDatabaseHandle(databasePath);
+
+    try {
+      if (!body.checkpointId) {
+        reply.code(400);
+        return {
+          ok: false,
+          error: "缺少 checkpointId。",
+        };
+      }
+
+      const repository = new NovelHarnessRepository(databaseHandle.db);
+      const runner = new IncubationWorkflowRunner(
+        repository,
+        executorResolution.executor,
+      );
+      const result = await runner.resumeFromCheckpoint({
+        rootDir: workspaceRoot,
+        checkpointId: body.checkpointId,
+        sourceWorkflowRunId: runId,
+        ...(body.goal ? { goal: body.goal } : {}),
+        autoApproveFinalGate: body.autoApproveFinalGate ?? true,
+      });
+
+      return {
+        ok: true,
+        workspaceRoot,
+        databasePath,
+        executor: publicExecutorInfo,
+        result,
+      };
+    } catch (error) {
+      request.log.error(error);
+      reply.code(500);
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      await databaseHandle.close();
+    }
+  });
+
   app.post("/api/evaluation/suggest", async (request, reply) => {
     const parsed = reviewScorecardSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -74,12 +227,29 @@ export function buildApp() {
         };
       }
 
-      const [batch, nodeRuns, artifacts, gates] = await Promise.all([
+      const [workflowRun] = await repository.listWorkflowRunsForProject(
+        latestProject.projectId,
+        1,
+      );
+      const [batch, nodeRuns, artifacts, gates, stageRuns, taskRuns, checkpoints, runActions] =
+        await Promise.all([
         repository.getBatch(latestProject.batchId),
         repository.listNodeRunsForProject(latestProject.projectId),
         repository.listArtifactsForProject(latestProject.projectId),
         repository.listGateTasksForProject(latestProject.projectId),
-      ]);
+          workflowRun
+            ? repository.listStageRunsForWorkflowRun(workflowRun.workflowRunId)
+            : Promise.resolve([]),
+          workflowRun
+            ? repository.listTaskRunsForWorkflowRun(workflowRun.workflowRunId)
+            : Promise.resolve([]),
+          workflowRun
+            ? repository.listCheckpointsForWorkflowRun(workflowRun.workflowRunId)
+            : Promise.resolve([]),
+          workflowRun
+            ? repository.listRunActionsForWorkflowRun(workflowRun.workflowRunId)
+            : Promise.resolve([]),
+        ]);
 
       return {
         ok: true,
@@ -89,6 +259,11 @@ export function buildApp() {
         latestRun: {
           batch,
           project: latestProject,
+          workflowRun: workflowRun ?? null,
+          stageRuns,
+          taskRuns,
+          checkpoints,
+          runActions,
           nodeRuns,
           artifacts,
           gates,

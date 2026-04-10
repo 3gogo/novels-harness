@@ -82,6 +82,48 @@ export const gateDecisionSchema = z.enum([
   "kill",
 ]);
 
+export const workflowRunStatusSchema = z.enum([
+  "queued",
+  "running",
+  "awaiting_review",
+  "succeeded",
+  "failed",
+  "rolled_back",
+]);
+
+export const runStepStatusSchema = z.enum([
+  "pending",
+  "ready",
+  "running",
+  "blocked",
+  "awaiting_review",
+  "succeeded",
+  "failed",
+  "skipped",
+  "rolled_back",
+  "reused_from_checkpoint",
+]);
+
+export const checkpointStatusSchema = z.enum([
+  "ready",
+  "consumed",
+  "superseded",
+]);
+
+export const runActionTypeSchema = z.enum([
+  "workflow_started",
+  "workflow_completed",
+  "workflow_failed",
+  "stage_started",
+  "stage_completed",
+  "stage_failed",
+  "checkpoint_created",
+  "resume_from_checkpoint",
+  "skip_stage",
+  "rollback_to_checkpoint",
+  "gate_recorded",
+]);
+
 const idSchema = z.string().min(1);
 const isoTimeSchema = z.string().min(1);
 
@@ -161,6 +203,76 @@ export const gateTaskSchema = z.object({
   updatedAt: isoTimeSchema,
 });
 
+export const workflowRunSchema = z.object({
+  workflowRunId: idSchema,
+  projectId: idSchema,
+  batchId: idSchema,
+  workflowName: z.string().min(1),
+  status: workflowRunStatusSchema,
+  currentStage: nodeNameSchema.nullable(),
+  latestCheckpointId: idSchema.nullable(),
+  parentWorkflowRunId: idSchema.nullable(),
+  sourceCheckpointId: idSchema.nullable(),
+  startedAt: isoTimeSchema,
+  completedAt: isoTimeSchema.nullable(),
+});
+
+export const stageRunSchema = z.object({
+  stageRunId: idSchema,
+  workflowRunId: idSchema,
+  projectId: idSchema,
+  nodeName: nodeNameSchema,
+  attempt: z.number().int().positive(),
+  status: runStepStatusSchema,
+  failureType: failureTypeSchema.nullable(),
+  startedAt: isoTimeSchema.nullable(),
+  completedAt: isoTimeSchema.nullable(),
+});
+
+export const taskRunSchema = z.object({
+  taskRunId: idSchema,
+  workflowRunId: idSchema,
+  stageRunId: idSchema,
+  projectId: idSchema,
+  nodeName: nodeNameSchema,
+  roleName: roleNameSchema,
+  executorId: z.string().min(1),
+  attempt: z.number().int().positive(),
+  status: runStepStatusSchema,
+  failureType: failureTypeSchema.nullable(),
+  inputRefs: z.array(z.string().min(1)).default([]),
+  outputRefs: z.array(z.string().min(1)).default([]),
+  reusedFromCheckpointId: idSchema.nullable(),
+  startedAt: isoTimeSchema.nullable(),
+  completedAt: isoTimeSchema.nullable(),
+});
+
+export const checkpointSchema = z.object({
+  checkpointId: idSchema,
+  workflowRunId: idSchema,
+  projectId: idSchema,
+  stageRunId: idSchema,
+  nodeName: nodeNameSchema,
+  status: checkpointStatusSchema,
+  artifactId: idSchema.nullable(),
+  createdAt: isoTimeSchema,
+});
+
+export const runActionSchema = z.object({
+  actionId: idSchema,
+  workflowRunId: idSchema,
+  projectId: idSchema,
+  actionType: runActionTypeSchema,
+  actor: z.string().min(1),
+  reason: z.string().min(1).nullable(),
+  targetNodeName: nodeNameSchema.nullable(),
+  targetStageRunId: idSchema.nullable(),
+  targetTaskRunId: idSchema.nullable(),
+  checkpointId: idSchema.nullable(),
+  payload: z.record(z.string(), z.unknown()).default({}),
+  createdAt: isoTimeSchema,
+});
+
 export const batchBriefArtifactSchema = z.object({
   batchId: idSchema,
   batchName: z.string().min(1),
@@ -238,10 +350,19 @@ export type ArtifactKind = z.infer<typeof artifactKindSchema>;
 export type FailureType = z.infer<typeof failureTypeSchema>;
 export type GateType = z.infer<typeof gateTypeSchema>;
 export type GateDecision = z.infer<typeof gateDecisionSchema>;
+export type WorkflowRunStatus = z.infer<typeof workflowRunStatusSchema>;
+export type RunStepStatus = z.infer<typeof runStepStatusSchema>;
+export type CheckpointStatus = z.infer<typeof checkpointStatusSchema>;
+export type RunActionType = z.infer<typeof runActionTypeSchema>;
 export type NodeRun = z.infer<typeof nodeRunSchema>;
 export type ArtifactManifest = z.infer<typeof artifactManifestSchema>;
 export type ReviewScorecard = z.infer<typeof reviewScorecardSchema>;
 export type GateTask = z.infer<typeof gateTaskSchema>;
+export type WorkflowRun = z.infer<typeof workflowRunSchema>;
+export type StageRun = z.infer<typeof stageRunSchema>;
+export type TaskRun = z.infer<typeof taskRunSchema>;
+export type Checkpoint = z.infer<typeof checkpointSchema>;
+export type RunAction = z.infer<typeof runActionSchema>;
 export type BatchBriefArtifact = z.infer<typeof batchBriefArtifactSchema>;
 export type IdeaCandidate = z.infer<typeof ideaCandidateSchema>;
 export type IdeaSpreadArtifact = z.infer<typeof ideaSpreadArtifactSchema>;

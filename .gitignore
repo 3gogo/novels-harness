@@ -9,3 +9,4 @@ coverage/
 workspace/
 data/
 .env.local
+*.log
