@@ -84,6 +84,18 @@ function buildFakeArtifact(contract: RunContract) {
             premise: "主角从信息差切入，在宗门争斗中不断翻盘。",
             differentiator: "从幕后情报战切入，而不是单纯升级打脸。",
           },
+          {
+            title: "《天命账房》",
+            hook: "宗门账房发现所有天才的资源账本都被提前改写。",
+            premise: "主角用账册、债务和供奉流向拆穿仙门晋升黑箱。",
+            differentiator: "把修仙升级写成资源审计和权力反杀。",
+          },
+          {
+            title: "《我替反派保管机缘》",
+            hook: "他被迫替大反派收纳机缘，却发现每件机缘都能改写自己的死期。",
+            premise: "主角夹在正邪两道之间，用保管身份不断截胡危机。",
+            differentiator: "用保管员视角串联机缘、背叛和长线阵营选择。",
+          },
         ],
       };
     case "concept_pack":

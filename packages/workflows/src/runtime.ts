@@ -232,7 +232,7 @@ export class IncubationWorkflowRunner {
       throw new Error("无法读取 checkpoint 对应的运行上下文。");
     }
 
-    const startNodeName = input.startNodeName ?? checkpoint.nodeName;
+    const startNodeName = input.startNodeName ?? getNextNodeName(checkpoint.nodeName);
     const startIndex = getNodeIndex(startNodeName);
     const now = new Date().toISOString();
     const workflowRunId = randomUUID();
@@ -291,7 +291,7 @@ export class IncubationWorkflowRunner {
       projectId: project.projectId,
       actionType: "resume_from_checkpoint",
       actor: "user:control-room",
-      reason: `Resume from ${checkpoint.nodeName}.`,
+      reason: `Resume after ${checkpoint.nodeName}.`,
       targetNodeName: startNodeName,
       targetStageRunId: getPlannedStage(resumePlan.plans, startIndex).stageRun.stageRunId,
       targetTaskRunId: getPlannedStage(resumePlan.plans, startIndex).taskRun.taskRunId,
@@ -299,6 +299,7 @@ export class IncubationWorkflowRunner {
       payload: {
         sourceWorkflowRunId: sourceWorkflowRun.workflowRunId,
         sourceCheckpointId: checkpoint.checkpointId,
+        checkpointNodeName: checkpoint.nodeName,
         startNodeName,
       },
       createdAt: now,
@@ -1403,6 +1404,16 @@ function getNodeIndex(nodeName: NodeName) {
   }
 
   return index;
+}
+
+function getNextNodeName(nodeName: NodeName) {
+  const nextNode = defaultIncubationNodes[getNodeIndex(nodeName) + 1];
+
+  if (!nextNode) {
+    throw new Error("该 checkpoint 已经是最后阶段，无需继续。");
+  }
+
+  return nextNode.name;
 }
 
 function defaultGoalForLane(targetLane: string) {

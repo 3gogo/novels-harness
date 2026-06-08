@@ -290,7 +290,7 @@ export const ideaCandidateSchema = z.object({
 });
 
 export const ideaSpreadArtifactSchema = z.object({
-  candidates: z.array(ideaCandidateSchema).min(1),
+  candidates: z.array(ideaCandidateSchema).min(4).max(30),
 });
 
 export const conceptPackArtifactSchema = z.object({
@@ -311,7 +311,7 @@ export const openingChapterSchema = z.object({
 });
 
 export const openingDraftArtifactSchema = z.object({
-  chapters: z.array(openingChapterSchema).min(1),
+  chapters: z.array(openingChapterSchema).min(3).max(5),
 });
 
 export const promotionDecisionArtifactSchema = z.object({

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { batchSchema, reviewScorecardSchema } from "../src/index.js";
+import {
+  batchSchema,
+  ideaSpreadArtifactSchema,
+  openingDraftArtifactSchema,
+  reviewScorecardSchema,
+} from "../src/index.js";
 
 describe("batchSchema", () => {
   it("accepts a valid incubation batch", () => {
@@ -32,6 +37,37 @@ describe("reviewScorecardSchema", () => {
       riskFlags: [],
       notes: "Scores should fail on invalid hook range.",
       decisionSuggestion: "approve",
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+});
+
+describe("incubation artifact schemas", () => {
+  it("requires enough idea candidates for a useful spread", () => {
+    const parsed = ideaSpreadArtifactSchema.safeParse({
+      candidates: [
+        {
+          title: "A",
+          hook: "hook",
+          premise: "premise",
+          differentiator: "different",
+        },
+      ],
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it("requires a trial opening draft to contain at least three chapters", () => {
+    const parsed = openingDraftArtifactSchema.safeParse({
+      chapters: [
+        {
+          chapterNumber: 1,
+          title: "第一章",
+          body: "正文",
+        },
+      ],
     });
 
     expect(parsed.success).toBe(false);

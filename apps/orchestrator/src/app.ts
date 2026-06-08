@@ -7,7 +7,7 @@ import Fastify from "fastify";
 
 import { suggestGateDecision } from "@novel-harness/evaluation";
 import { defaultPromptTemplates } from "@novel-harness/prompts";
-import { reviewScorecardSchema } from "@novel-harness/schemas";
+import { nodeNameSchema, reviewScorecardSchema } from "@novel-harness/schemas";
 import { FakeExecutor } from "@novel-harness/testkit";
 import {
   defaultIncubationNodes,
@@ -162,6 +162,18 @@ export function buildApp() {
         };
       }
 
+      const parsedStartNodeName = body.startNodeName
+        ? nodeNameSchema.safeParse(body.startNodeName)
+        : null;
+
+      if (parsedStartNodeName && !parsedStartNodeName.success) {
+        reply.code(400);
+        return {
+          ok: false,
+          error: "startNodeName 无效。",
+        };
+      }
+
       const repository = new NovelHarnessRepository(databaseHandle.db);
       const runner = new IncubationWorkflowRunner(
         repository,
@@ -171,6 +183,7 @@ export function buildApp() {
         rootDir: workspaceRoot,
         checkpointId: body.checkpointId,
         sourceWorkflowRunId: runId,
+        ...(parsedStartNodeName ? { startNodeName: parsedStartNodeName.data } : {}),
         ...(body.goal ? { goal: body.goal } : {}),
         autoApproveFinalGate: body.autoApproveFinalGate ?? true,
       });

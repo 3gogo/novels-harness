@@ -897,6 +897,7 @@ export function App() {
                   expandedStages[stage.node.name] ?? shouldStageAutoExpand(stage);
                 const canResume =
                   Boolean(latestRun?.workflowRun && stage.checkpoint) &&
+                  stage.index < checklistStages.length - 1 &&
                   !busy &&
                   workflowStatus !== "running";
 
@@ -938,7 +939,7 @@ export function App() {
                     <div className="stage-toolbar">
                       <p className="stage-summary-line">{stage.nextAction}</p>
                       <div className="stage-action-row">
-                        {stage.checkpoint ? (
+                        {stage.checkpoint && stage.index < checklistStages.length - 1 ? (
                           <button
                             className="stage-button"
                             onClick={() => void resumeFromCheckpoint(stage)}
@@ -946,7 +947,7 @@ export function App() {
                           >
                             {resumingCheckpointId === stage.checkpoint.checkpointId
                               ? "恢复中..."
-                              : "从这里继续"}
+                              : "继续后续"}
                           </button>
                         ) : null}
                         <button
@@ -1154,10 +1155,6 @@ function buildChecklistStages(
     const artifactsForRun = latestNodeRun
       ? artifacts.filter((artifact) => artifact.sourceRunId === latestNodeRun.runId)
       : [];
-    const primaryArtifact =
-      artifactsForRun.find((artifact) => artifact.kind === primaryArtifactKind) ??
-      artifacts.find((artifact) => artifact.kind === primaryArtifactKind) ??
-      null;
     const gate = node.name === "promotion_decision" ? gates[0] ?? null : null;
     const checkpoint =
       (runtimeStage
@@ -1168,6 +1165,15 @@ function buildChecklistStages(
         : checkpoints.find(
             (entry) => entry.nodeName === node.name && entry.status === "ready",
           )) ?? null;
+    const checkpointArtifact = checkpoint?.artifactId
+      ? artifacts.find((artifact) => artifact.artifactId === checkpoint.artifactId) ?? null
+      : null;
+    const primaryArtifact =
+      artifactsForRun.find((artifact) => artifact.kind === primaryArtifactKind) ??
+      checkpointArtifact ??
+      (runtimeStage
+        ? null
+        : artifacts.find((artifact) => artifact.kind === primaryArtifactKind) ?? null);
     const statusKey = runtimeStage
       ? mapRunStepStatusToVisualStatus(runtimeStage.status, gate)
       : resolveStageStatus(index, latestNodeRun, gate, stages);

@@ -133,6 +133,9 @@ describe("IncubationWorkflowRunner", () => {
       ).toBe("reused_from_checkpoint");
       expect(
         resumed.stageRuns.find((stageRun) => stageRun.nodeName === "concept_pack")?.status,
+      ).toBe("reused_from_checkpoint");
+      expect(
+        resumed.stageRuns.find((stageRun) => stageRun.nodeName === "opening_draft")?.status,
       ).toBe("succeeded");
       expect(resumed.project.status).toBe("promoted");
     } finally {
